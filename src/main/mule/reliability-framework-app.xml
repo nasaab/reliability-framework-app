@@ -11,7 +11,7 @@ http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/
 		<http:listener-connection host="0.0.0.0" port="8081" />
 	</http:listener-config>
 	<db:config name="Database_Config" doc:name="Database Config" doc:id="32c39055-acf1-4b3b-bfd9-5f0bf3b62515" >
-		<db:generic-connection url="jdbc:postgresql://localhost:5432/demo" driverClassName="org.postgresql.Driver" user="postgres" password="pgadmin" />
+		<db:generic-connection url="jdbc:postgresql://localhost:5432/demo" driverClassName="org.postgresql.Driver" user="relace-me" password="relace-me" />
 	</db:config>
 	<flow name="reliability-framework-acquisition-flow" doc:id="092b786e-f199-4eb2-8a4b-6899093742da" >
 		<http:listener doc:name="Listener" doc:id="f18d0d44-42ae-4030-8710-0de39aaa4010" config-ref="HTTP_Listener_config" path="/data"/>
