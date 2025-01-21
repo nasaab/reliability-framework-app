@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:jms="http://www.mulesoft.org/schema/mule/jms"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/jms http://www.mulesoft.org/schema/mule/jms/current/mule-jms.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="0a90735a-232e-4232-9699-394e80127896" >
+		<http:listener-connection host="0.0.0.0" port="8081" />
+	</http:listener-config>
+	<db:config name="Database_Config" doc:name="Database Config" doc:id="32c39055-acf1-4b3b-bfd9-5f0bf3b62515" >
+		<db:generic-connection url="jdbc:postgresql://localhost:5432/demo" driverClassName="org.postgresql.Driver" user="postgres" password="pgadmin" />
+	</db:config>
+	<flow name="reliability-framework-acquisition-flow" doc:id="092b786e-f199-4eb2-8a4b-6899093742da" >
+		<http:listener doc:name="Listener" doc:id="f18d0d44-42ae-4030-8710-0de39aaa4010" config-ref="HTTP_Listener_config" path="/data"/>
+		<ee:transform doc:name="User Properties" doc:id="d7cd8068-411c-4d91-9b3b-303bf8241a45" >
+			<ee:message >
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="userProperties" ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"targetQueue": "BOOK.TARGET.MQ",
+	"retryCount": attributes.properties.userProperties.retryCount default 0,
+	"retryDelay": "30",
+	"maxRetryCount": "3",
+	"contentType": "application/json",
+	"transactionId": attributes.properties.userProperties.transactionId default correlationId,
+	"correlationId": attributes.properties.userProperties.correlationId default correlationId,
+	"publishDateTime": now()
+}]]></ee:set-variable>
+				<ee:set-variable variableName="incomingData" ><![CDATA[%dw 2.0
+output application/json
+---
+write(payload, "application/json")]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<jms:publish doc:name="Publish to BOOK.TARGET.MQ" doc:id="4226a244-4c13-4a98-b58a-96ee5ebb2ad3" config-ref="JMS_Config" destination="BOOK.TARGET.MQ" sendCorrelationId="ALWAYS">
+			<jms:message correlationId="#[correlationId]" >
+				<jms:body ><![CDATA[#[vars.incomingData]]]></jms:body>
+				<jms:properties ><![CDATA[#[vars.userProperties]]]></jms:properties>
+			</jms:message>
+		</jms:publish>
+	</flow>
+	<flow name="reliability-framework-application-flow" doc:id="3b7e9e7a-47cd-4864-ad80-78bde9d534ca" >
+		<jms:listener doc:name="Listen on Target Queue BOOK.TARGET.MQ" doc:id="def09f66-5d3f-4b6a-ae17-9211b0ed4ce2" config-ref="JMS_Config" destination="BOOK.TARGET.MQ" ackMode="AUTO">
+			<jms:consumer-type >
+				<jms:queue-consumer />
+			</jms:consumer-type>
+		</jms:listener>
+		<logger level="INFO" doc:name="Start Flow : Message Received" doc:id="f552fb56-7071-462e-9ec9-bef1f9e59968" message="Start Flow : Message Received FromTarget Queue BOOK.TARGET.MQ : #[payload]"/>
+		<ee:transform doc:name="Set bookDetails" doc:id="d862d00c-5227-4c75-9acd-4152f10ecaf9" >
+			<ee:message >
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="bookDetails" ><![CDATA[%dw 2.0
+output application/json
+---
+read(payload, "application/json")]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<until-successful maxRetries="1" doc:name="Until Successful" doc:id="1ba3b1cc-b59e-4fbe-a204-c798668ed0ff" millisBetweenRetries="3000">
+			<db:insert doc:name="Save Book Details" doc:id="265674d7-32da-4727-9d50-12a354e08b66" config-ref="Database_Config">
+			<db:sql><![CDATA[INSERT INTO book(id, title, author, bookshopname, isbn, price) VALUES (:id, :title, :author, :bookshopname, :isbn, :price)]]></db:sql>
+			<db:input-parameters><![CDATA[#[{
+    "id": vars.bookDetails.id,
+    "title": vars.bookDetails.title,
+    "author": vars.bookDetails.author,
+    "bookshopname": vars.bookDetails.bookshopname,
+    "isbn": vars.bookDetails.isbn,
+    "price": vars.bookDetails.price
+}]]]></db:input-parameters>
+		</db:insert>
+		</until-successful>
+		<logger level="INFO" doc:name="End Flow" doc:id="8490fb4f-87fd-410b-b071-139af9de43e3" message="End Flow : Message Received From Target Queue BOOK.TARGET.MQ and saved in db successfully"/>
+		<error-handler >
+			<on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" doc:id="125de2bd-a3e4-44ba-a469-e3edd2c25ffa" type="ANY">
+				<ee:transform doc:name="User Properties" doc:id="9d14c453-8548-4dac-9f87-4162c778ab02" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+write(vars.bookDetails, "application/json")]]></ee:set-payload>
+					</ee:message>
+					<ee:variables >
+						<ee:set-variable variableName="userProperties" ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"targetQueue": "BOOK.TARGET.MQ",
+	"retryCount": attributes.properties.userProperties.retryCount default 0,
+	"retryDelay": "30",
+	"maxRetryCount": "3",
+	"contentType": "application/json",
+	"transactionId": attributes.properties.userProperties.transactionId default correlationId,
+	"correlationId": attributes.properties.userProperties.correlationId default correlationId,
+	"publishDateTime": now()
+}]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<jms:publish doc:name="Publish to BOOK.WAITING.MQ" doc:id="7881c1e8-9410-4db1-8b0a-2563f038f5dc" config-ref="JMS_Config" destination="BOOK.WAITING.MQ" sendCorrelationId="ALWAYS">
+					<jms:message correlationId="#[vars.userProperties.correlationId]">
+						<jms:properties ><![CDATA[#[vars.userProperties]]]></jms:properties>
+					</jms:message>
+				</jms:publish>
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+</mule>

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:jms="http://www.mulesoft.org/schema/mule/jms"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/jms http://www.mulesoft.org/schema/mule/jms/current/mule-jms.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+	<jms:config name="JMS_Config" doc:name="JMS Config" doc:id="667403c5-f4b5-4235-9122-88394b6460c3" >
+		<jms:active-mq-connection >
+			<jms:caching-strategy >
+				<jms:default-caching cacheProducers="false" cacheConsumers="false" />
+			</jms:caching-strategy>
+			<jms:factory-configuration brokerUrl="tcp://localhost:61616" />
+		</jms:active-mq-connection>
+	</jms:config>
+	<flow name="listen-message-from-waiting-q" doc:id="22ee573b-7ca9-46d8-bf53-66c0d0aad8e8" >
+		<jms:listener doc:name="Listen to Waiting Queue BOOK.WAITING.MQ" doc:id="42242f47-19b3-46ec-b86a-d13ef82d7052" config-ref="JMS_Config" destination="BOOK.WAITING.MQ" ackMode="AUTO">
+			<jms:consumer-type >
+				<jms:queue-consumer />
+			</jms:consumer-type>
+		</jms:listener>
+		<logger level="INFO" doc:name="Start Flow : Message Subscribed" doc:id="313fc297-7861-4e4b-bae4-7d5ac7dc3191" message="Start Flow : Message subscribed from waiting queue BOOK.WAITING.MQ : #[payload]"/>
+		<ee:transform doc:name="Fetch Header Properties &amp; Payload" doc:id="071689f9-d30f-4fd4-a796-3e03f9001aa4" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+read(payload, "application/json")]]></ee:set-payload>
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="fetchUserProperties" ><![CDATA[attributes.properties.userProperties]]></ee:set-variable>
+				<ee:set-variable variableName="retryIntervalDuration" ><![CDATA[%dw 2.0
+output application/java
+---
+attributes.properties.userProperties.publishDateTime as LocalDateTime + |PT30S|]]></ee:set-variable>
+				<ee:set-variable variableName="data" ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	data: write(payload, "application/json")
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<until-successful maxRetries="1" doc:name="Until Successful" doc:id="6eb9f524-1fb3-4d56-bad2-6190d2bdd5ad" millisBetweenRetries="3000">
+			<db:insert doc:name="Save Retry Details &amp; Count" doc:id="641754a7-2846-4bab-8dea-9ee0dd9f0b00" config-ref="Database_Config">
+			<db:sql><![CDATA[INSERT INTO retry_details(target_queue, retry_count, retry_delay, max_retry_count, content_type, transaction_id, correlation_id, publish_date_time, retry_duration, status, payload) VALUES (:targetQueue, :retryCount, :retryDelay, :maxRetryCount, :contentType, :transactionId, :correlationId, :publishDateTime, :retryDuration, :status, :data);]]></db:sql>
+			<db:input-parameters><![CDATA[#[{
+	targetQueue: vars.fetchUserProperties.targetQueue,
+	retryCount: vars.fetchUserProperties.retryCount,
+	retryDelay: vars.fetchUserProperties.retryDelay,
+	maxRetryCount: vars.fetchUserProperties.maxRetryCount,
+	contentType: vars.fetchUserProperties.contentType,
+	transactionId: vars.fetchUserProperties.transactionId,
+	correlationId: vars.fetchUserProperties.correlationId,
+	publishDateTime: vars.fetchUserProperties.publishDateTime,
+	retryDuration: vars.retryIntervalDuration,
+	status: "RECEIVED",
+	data: vars.data.data
+}]]]></db:input-parameters>
+		</db:insert>
+		</until-successful>
+		<logger level="INFO" doc:name="End Flow" doc:id="c93e5c83-b86d-47df-a4aa-90727762d9ec" message="End Flow : Message subscribed from waiting queue BOOK.WAITING.MQ and retry details saved in db successfully"/>
+		<error-handler >
+			<on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" doc:id="42f087b0-f6e3-458f-88bd-54494aaaa201" type="ANY">
+				<ee:transform doc:name="User Properties" doc:id="6f2547a8-831d-45e7-8aa3-8c489e630e3c" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+write(vars.bookDetails, "application/json")]]></ee:set-payload>
+					</ee:message>
+					<ee:variables >
+						<ee:set-variable variableName="userProperties" ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"targetQueue": "BOOK.WAITING.MQ",
+	"retryCount": attributes.properties.userProperties.retryCount,
+	"retryDelay": "30",
+	"maxRetryCount": "3",
+	"contentType": "application/json",
+	"transactionId": attributes.properties.userProperties.transactionId default correlationId,
+	"correlationId": attributes.properties.userProperties.correlationId default correlationId,
+	"publishDateTime": now()
+}]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<jms:publish doc:name="Publish to BOOK.WAITING.MQ" doc:id="615b86dc-a9d6-4bbb-abd7-36a016564b88" config-ref="JMS_Config" destination="BOOK.WAITING.MQ" sendCorrelationId="ALWAYS">
+					<jms:message correlationId="#[vars.userProperties.correlationId]" >
+						<jms:properties ><![CDATA[#[vars.userProperties]]]></jms:properties>
+					</jms:message>
+				</jms:publish>
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+</mule>

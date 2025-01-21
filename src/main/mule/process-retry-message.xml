@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:jms="http://www.mulesoft.org/schema/mule/jms" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/jms http://www.mulesoft.org/schema/mule/jms/current/mule-jms.xsd">
+	<flow name="process-waiting-messageFlow" doc:id="79a5e787-7540-4979-b490-90bb6fdc87b4" >
+		<scheduler doc:name="Scheduler" doc:id="8bd6d89c-6652-455d-8f7b-76c925192dc0" >
+			<scheduling-strategy >
+				<fixed-frequency frequency="2" timeUnit="MINUTES"/>
+			</scheduling-strategy>
+		</scheduler>
+		<logger level="INFO" doc:name="Scheduler Flow Start" doc:id="95f2f998-aef1-4e4e-942e-ada0485bba7b" message="Scheduler Flow Start"/>
+		<db:select doc:name="Fetch Retry Details" doc:id="b6b2381c-20d8-4745-a49d-3d8c2fa43131" config-ref="Database_Config">
+			<db:sql ><![CDATA[SELECT id, target_queue, retry_count, retry_delay, max_retry_count, content_type, transaction_id, correlation_id, publish_date_time, retry_duration, status, payload
+	FROM retry_details where retry_duration <= CURRENT_TIMESTAMP and status = :status;
+]]></db:sql>
+			<db:input-parameters ><![CDATA[#[{
+	status: "RECEIVED"
+}]]]></db:input-parameters>
+		</db:select>
+		<choice doc:name="Check For DB Payload" doc:id="dd5f7c2f-1658-4476-b17c-1da84eed639c" >
+			<when expression="#[sizeOf(payload) &gt; 0]">
+				<foreach doc:name="Iterate Over Retry Details" doc:id="3ea2b04e-d837-42b1-9f54-66dd08807d63" collection="#[payload]">
+					<choice doc:name="Check Retry Count" doc:id="6f8fbbcc-e63b-4d35-a6e4-85ae4c69e71a" >
+						<when expression="#[payload.retry_count &lt; payload.max_retry_count]">
+							<ee:transform doc:name="Set Retry User Propertirs" doc:id="c26d2550-44bd-47b7-993a-cdaea46138bc">
+					<ee:message>
+									<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+read(payload.payload, "application/json")]]></ee:set-payload>
+					</ee:message>
+					<ee:variables>
+						<ee:set-variable variableName="retryUserProperties"><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"targetQueue": payload.target_queue,
+	"retryCount": payload.retry_count + 1,
+	"retryDelay": payload.retry_delay,
+	"maxRetryCount": payload.max_retry_count,
+	"contentType": payload.content_type,
+	"transactionId": payload.transaction_id,
+	"correlationId": payload.correlation_id,
+	"publishDateTime": now()
+}]]></ee:set-variable>
+									<ee:set-variable variableName="retryId" ><![CDATA[%dw 2.0
+output application/java
+---
+payload.id]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+							<logger level="INFO" doc:name="Message published" doc:id="d0f1a84b-6ee3-4353-a4da-e2a5c16fca56" message="Message published to target queue : BOOK.TARGET.MQ for reprocessing"/>
+							<jms:publish doc:name="Publish To Target Queue" doc:id="24484b06-3cba-4914-aa71-8567c11d1cb0" config-ref="JMS_Config" destination="BOOK.TARGET.MQ" sendCorrelationId="ALWAYS">
+					<jms:message correlationId="#[vars.retryUserProperties.correlationId]">
+						<jms:properties><![CDATA[#[vars.retryUserProperties]]]></jms:properties>
+					</jms:message>
+				</jms:publish>
+							<db:update doc:name="Update Status as PROCESSED" doc:id="36e9a8a8-9b16-4661-a0bb-5b72243955c8" config-ref="Database_Config">
+					<db:sql><![CDATA[update retry_details set status=:status where id=:id]]></db:sql>
+					<db:input-parameters><![CDATA[#[{
+	status: "PROCESSED",
+	id: vars.retryId
+}]]]></db:input-parameters>
+				</db:update>
+						</when>
+						<otherwise >
+							<ee:transform doc:name="Set Retry User Propertirs" doc:id="4ddd1a5c-5f7e-4a0f-9c40-eac8713c0172">
+					<ee:message>
+									<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+read(payload.payload, "application/json")]]></ee:set-payload>
+					</ee:message>
+					<ee:variables>
+						<ee:set-variable variableName="retryUserProperties"><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"targetQueue": payload.target_queue,
+	"retryCount": payload.retry_count + 1,
+	"retryDelay": payload.retry_delay,
+	"maxRetryCount": payload.max_retry_count,
+	"contentType": payload.content_type,
+	"transactionId": payload.transaction_id,
+	"correlationId": payload.correlation_id,
+	"publishDateTime": payload.publish_date_time
+}]]></ee:set-variable>
+									<ee:set-variable variableName="retryId" ><![CDATA[%dw 2.0
+output application/java
+---
+payload.id]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+							<logger level="INFO" doc:name="Message published to DLQ" doc:id="8e47c621-4b19-4b04-babe-06fd3d4f2809" message="Message published to dlq queue : BOOK.DLQ.MQ" />
+							<jms:publish doc:name="Publish To DLQ" doc:id="4ce00e2e-be1e-42d1-bafa-affa065be6fd" config-ref="JMS_Config" destination="BOOK.DLQ.MQ" sendCorrelationId="ALWAYS">
+					<jms:message outboundContentType="#[payload.content_type]" correlationId="#[vars.retryUserProperties.correlationId]">
+						<jms:properties><![CDATA[#[vars.retryUserProperties]]]></jms:properties>
+					</jms:message>
+				</jms:publish>
+							<db:update doc:name="Update Status as FAILED" doc:id="a9a8db6b-29d0-4a5a-a24b-4a2aea67a126" config-ref="Database_Config">
+					<db:sql><![CDATA[update retry_details set status=:status where id=:id]]></db:sql>
+					<db:input-parameters><![CDATA[#[{
+	status: "FAILED",
+	id: vars.retryId
+}]]]></db:input-parameters>
+				</db:update>
+						</otherwise>
+					</choice>
+				</foreach>
+			</when>
+			<otherwise >
+				<logger level="INFO" doc:name="No data found" doc:id="83ac11ac-b0a4-4a9a-9fe1-3aeba34b78c1" message="No data found"/>
+			</otherwise>
+		</choice>
+		<logger level="INFO" doc:name="Scheduler Flow End" doc:id="886b96f5-5dce-49dd-a930-f3fc1910295f" message="Scheduler Flow End"/>
+	</flow>
+</mule>
